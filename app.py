@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -105,6 +106,11 @@ def _provider_cooldown_label(provider: str) -> str:
 
 def _provider_status_rows(month_key: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    key_by_provider = {
+        "hunter": "HUNTER_API_KEY",
+        "dropcontact": "DROPCONTACT_API_KEY",
+        "apollo": "APOLLO_API_KEY",
+    }
     for provider in PROVIDER_ORDER:
         usage = db.get_provider_usage(provider, month_key) or {}
         used_count = int(usage.get("used_count", 0))
@@ -127,6 +133,9 @@ def _provider_status_rows(month_key: str) -> list[dict[str, Any]]:
                 "estimated_limit": limit_display,
                 "credits_left": credits_left,
                 "cooldown_active": _provider_cooldown_label(provider),
+                "api_key": "set"
+                if str(os.getenv(key_by_provider.get(provider, ""), "")).strip()
+                else "missing",
             }
         )
     return rows
@@ -303,12 +312,23 @@ if run_lookup:
             push_message("Cached result found. Using saved email.")
             LOGGER.info("lookup_cache_hit request_id=%s linkedin_url=%s", request_id, normalized_url)
         else:
-            with st.spinner("Running provider waterfall..."):
-                st.session_state["last_result"] = run_email_waterfall(
+            try:
+                with st.spinner("Running provider waterfall..."):
+                    st.session_state["last_result"] = run_email_waterfall(
+                        normalized_url,
+                        force_refresh=force_refresh,
+                        event_callback=push_message,
+                        request_id=request_id,
+                    )
+            except Exception as exc:
+                st.session_state["last_result"] = None
+                st.session_state["last_error"] = "Lookup failed. Check Provider Status and app logs."
+                push_message("Lookup failed")
+                LOGGER.exception(
+                    "lookup_request_failed request_id=%s linkedin_url=%s error=%s",
+                    request_id,
                     normalized_url,
-                    force_refresh=force_refresh,
-                    event_callback=push_message,
-                    request_id=request_id,
+                    exc,
                 )
 
             if (
