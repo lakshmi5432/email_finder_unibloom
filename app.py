@@ -623,17 +623,17 @@ if batch_summary:
 
 batch_results = st.session_state.get("batch_results") or []
 if batch_results:
-    st.dataframe(batch_results, use_container_width=True, hide_index=True)
+    st.dataframe(batch_results, width="stretch", hide_index=True)
 
 st.subheader("History / Recent Lookups")
 history_rows = _history_rows(limit=20)
 if history_rows:
-    st.dataframe(history_rows, use_container_width=True, hide_index=True)
+    st.dataframe(history_rows, width="stretch", hide_index=True)
 else:
     st.info("No lookup history yet.")
 
 st.subheader("Provider Status")
 status_rows = _provider_status_rows(month_key)
-st.dataframe(status_rows, use_container_width=True, hide_index=True)
+st.dataframe(status_rows, width="stretch", hide_index=True)
 st.caption(f"Current usage month: {month_key}")
 st.caption(f"Provider cooldown window: {RATE_LIMIT_COOLDOWN_MINUTES} minutes")
