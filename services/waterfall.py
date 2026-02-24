@@ -167,6 +167,15 @@ def _provider_display_name(provider: str) -> str:
     return provider[:1].upper() + provider[1:]
 
 
+def _safe_int(value: Any, default: int | None = None) -> int | None:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def run_email_waterfall(
     linkedin_url: str,
     *,
@@ -216,16 +225,47 @@ def run_email_waterfall(
 
     month_key = db.current_month_key()
     previous_attempts = db.list_provider_attempts(lookup_id)
-    attempt_order = len(previous_attempts) + 1
+    attempt_order = (
+        max(_safe_int(row.get("attempt_order"), 0) or 0 for row in previous_attempts) + 1
+        if previous_attempts
+        else 1
+    )
     found_result: NormalizedProviderResponse | None = None
 
     for provider in PROVIDER_ORDER:
         provider_name = _provider_display_name(provider)
-        usage = _ensure_provider_usage_row(db, provider, month_key)
-        is_enabled = bool(usage.get("is_enabled", 1))
-        used_count = int(usage.get("used_count", 0))
-        estimated_limit_raw = usage.get("estimated_limit")
-        estimated_limit = int(estimated_limit_raw) if estimated_limit_raw is not None else None
+        try:
+            usage = _ensure_provider_usage_row(db, provider, month_key)
+            is_enabled = bool(usage.get("is_enabled", 1))
+            used_count = _safe_int(usage.get("used_count"), 0) or 0
+            estimated_limit_raw = usage.get("estimated_limit")
+            estimated_limit = _safe_int(estimated_limit_raw, None)
+        except Exception as exc:
+            LOGGER.exception(
+                "provider_precheck_error request_id=%s provider=%s attempt_order=%s",
+                request_id,
+                provider,
+                attempt_order,
+            )
+            _emit_event(event_callback, f"{provider_name}: error")
+            try:
+                db.insert_provider_attempt(
+                    lookup_id=lookup_id,
+                    provider=provider,
+                    attempt_order=attempt_order,
+                    result="error",
+                    response_time_ms=0,
+                    error_message=f"precheck_error: {exc}",
+                )
+            except Exception:
+                LOGGER.exception(
+                    "provider_precheck_error_log_failed request_id=%s provider=%s attempt_order=%s",
+                    request_id,
+                    provider,
+                    attempt_order,
+                )
+            attempt_order += 1
+            continue
 
         if not is_enabled:
             LOGGER.info(
