@@ -273,18 +273,25 @@ def run_email_waterfall(
     if (
         not force_refresh
         and existing_lookup
-        and existing_lookup.get("status") == "found"
+        and existing_lookup.get("status") in {"found", "not_found", "error"}
         and _is_recent_lookup(existing_lookup, CACHE_TTL_HOURS)
     ):
         cached_result = _lookup_row_to_result(existing_lookup, cache_hit=True)
         cached_result["source"] = "cache"
+        cached_status = cached_result.get("status")
         LOGGER.info(
-            "waterfall_cache_hit request_id=%s linkedin_url=%s email=%s",
+            "waterfall_cache_hit request_id=%s linkedin_url=%s status=%s email=%s",
             request_id,
             linkedin_url,
+            cached_status,
             cached_result.get("email"),
         )
-        _emit_event(event_callback, "Cached result found. Using saved email.")
+        if cached_status == "found":
+            _emit_event(event_callback, "Cached result found. Using saved email.")
+        elif cached_status == "not_found":
+            _emit_event(event_callback, "Cached lookup: no email found.")
+        else:
+            _emit_event(event_callback, "Cached lookup: previous error.")
         return cached_result
 
     if existing_lookup and existing_lookup.get("id") is not None:

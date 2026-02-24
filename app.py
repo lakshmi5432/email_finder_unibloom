@@ -14,6 +14,7 @@ from db.database import Database
 from services.google_sheets import append_contact_to_google_sheet
 from services.linkedin_utils import LinkedInURLValidationError, normalize_linkedin_profile_url
 from services.waterfall import (
+    CACHE_TTL_HOURS,
     PROVIDER_DEFAULT_LIMITS,
     PROVIDER_ORDER,
     RATE_LIMIT_COOLDOWN_MINUTES,
@@ -71,6 +72,15 @@ def _confidence_to_percent(value: Any) -> int | None:
         numeric *= 100
     numeric = max(0, min(100, numeric))
     return int(round(numeric))
+
+
+def _is_recent_lookup_row(lookup_row: dict[str, Any], ttl_hours: int) -> bool:
+    updated_at = _parse_sqlite_timestamp(lookup_row.get("updated_at"))
+    if updated_at is None:
+        updated_at = _parse_sqlite_timestamp(lookup_row.get("created_at"))
+    if updated_at is None:
+        return False
+    return datetime.utcnow() - updated_at <= timedelta(hours=ttl_hours)
 
 
 def _ensure_provider_usage_rows(month_key: str) -> None:
@@ -160,9 +170,13 @@ def _history_rows(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def _cached_lookup_result(lookup_row: dict[str, Any]) -> dict[str, Any]:
+    status = str(lookup_row.get("status") or "not_found")
+    if status not in {"found", "not_found", "error"}:
+        status = "not_found"
+
     return {
         "linkedin_url": lookup_row.get("linkedin_url"),
-        "status": "found",
+        "status": status,
         "email": lookup_row.get("email"),
         "full_name": lookup_row.get("full_name"),
         "company": lookup_row.get("company"),
@@ -316,12 +330,24 @@ if run_lookup:
         cached_lookup = db.get_lookup_by_linkedin_url(normalized_url)
         if (
             cached_lookup
-            and cached_lookup.get("status") == "found"
             and not force_refresh
+            and str(cached_lookup.get("status") or "") in {"found", "not_found", "error"}
+            and _is_recent_lookup_row(cached_lookup, CACHE_TTL_HOURS)
         ):
             st.session_state["last_result"] = _cached_lookup_result(cached_lookup)
-            push_message("Cached result found. Using saved email.")
-            LOGGER.info("lookup_cache_hit request_id=%s linkedin_url=%s", request_id, normalized_url)
+            cached_status = st.session_state["last_result"].get("status")
+            if cached_status == "found":
+                push_message("Cached result found. Using saved email.")
+            elif cached_status == "not_found":
+                push_message("Cached lookup: no email found.")
+            else:
+                push_message("Cached lookup: previous error.")
+            LOGGER.info(
+                "lookup_cache_hit request_id=%s linkedin_url=%s status=%s",
+                request_id,
+                normalized_url,
+                cached_status,
+            )
         else:
             try:
                 with st.spinner("Running provider waterfall..."):
