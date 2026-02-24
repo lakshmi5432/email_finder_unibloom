@@ -1,0 +1,11 @@
+.env
+logs/
+
+# Secrets / local-only files
+google-service-account.json
+gen-lang-client-*.json
+*.pem
+*.key
+.venv/
+__pycache__/
+db/email_finder.db
