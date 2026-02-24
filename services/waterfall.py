@@ -160,7 +160,10 @@ def _connector_for(provider: str) -> ProviderCallable:
 def _emit_event(event_callback: Callable[[str], None] | None, message: str) -> None:
     if event_callback is None:
         return
-    event_callback(message)
+    try:
+        event_callback(message)
+    except Exception:
+        LOGGER.exception("waterfall_event_callback_error message=%s", message)
 
 
 def _provider_display_name(provider: str) -> str:
