@@ -176,6 +176,64 @@ def _safe_int(value: Any, default: int | None = None) -> int | None:
         return default
 
 
+def _safe_record_provider_attempt(
+    db: Database,
+    *,
+    lookup_id: int,
+    provider: str,
+    attempt_order: int,
+    result: str,
+    request_id: str | None = None,
+    http_status: int | None = None,
+    response_time_ms: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    try:
+        db.insert_provider_attempt(
+            lookup_id=lookup_id,
+            provider=provider,
+            attempt_order=attempt_order,
+            result=result,
+            http_status=http_status,
+            response_time_ms=response_time_ms,
+            error_message=error_message,
+        )
+    except Exception:
+        LOGGER.exception(
+            "provider_attempt_write_error request_id=%s provider=%s attempt_order=%s result=%s",
+            request_id,
+            provider,
+            attempt_order,
+            result,
+        )
+
+
+def _safe_increment_provider_usage(
+    db: Database,
+    *,
+    provider: str,
+    month_key: str,
+    increment_by: int,
+    estimated_limit: int | None,
+    request_id: str | None = None,
+) -> None:
+    try:
+        db.increment_provider_usage(
+            provider=provider,
+            month_key=month_key,
+            increment_by=increment_by,
+            estimated_limit=estimated_limit,
+        )
+    except Exception:
+        LOGGER.exception(
+            "provider_usage_write_error request_id=%s provider=%s increment_by=%s month_key=%s",
+            request_id,
+            provider,
+            increment_by,
+            month_key,
+        )
+
+
 def run_email_waterfall(
     linkedin_url: str,
     *,
@@ -240,6 +298,7 @@ def run_email_waterfall(
             used_count = _safe_int(usage.get("used_count"), 0) or 0
             estimated_limit_raw = usage.get("estimated_limit")
             estimated_limit = _safe_int(estimated_limit_raw, None)
+            in_cooldown = _is_provider_in_cooldown(db, provider, RATE_LIMIT_COOLDOWN_MINUTES)
         except Exception as exc:
             LOGGER.exception(
                 "provider_precheck_error request_id=%s provider=%s attempt_order=%s",
@@ -248,22 +307,16 @@ def run_email_waterfall(
                 attempt_order,
             )
             _emit_event(event_callback, f"{provider_name}: error")
-            try:
-                db.insert_provider_attempt(
-                    lookup_id=lookup_id,
-                    provider=provider,
-                    attempt_order=attempt_order,
-                    result="error",
-                    response_time_ms=0,
-                    error_message=f"precheck_error: {exc}",
-                )
-            except Exception:
-                LOGGER.exception(
-                    "provider_precheck_error_log_failed request_id=%s provider=%s attempt_order=%s",
-                    request_id,
-                    provider,
-                    attempt_order,
-                )
+            _safe_record_provider_attempt(
+                db,
+                lookup_id=lookup_id,
+                provider=provider,
+                attempt_order=attempt_order,
+                result="error",
+                response_time_ms=0,
+                error_message=f"precheck_error: {exc}",
+                request_id=request_id,
+            )
             attempt_order += 1
             continue
 
@@ -274,13 +327,15 @@ def run_email_waterfall(
                 provider,
             )
             _emit_event(event_callback, f"{provider_name}: skipped (disabled)")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
                 result="error",
                 response_time_ms=0,
                 error_message="skipped: provider disabled",
+                request_id=request_id,
             )
             attempt_order += 1
             continue
@@ -294,31 +349,35 @@ def run_email_waterfall(
                 estimated_limit,
             )
             _emit_event(event_callback, f"{provider_name}: skipped (limit reached)")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
                 result="error",
                 response_time_ms=0,
                 error_message="skipped: monthly limit reached",
+                request_id=request_id,
             )
             attempt_order += 1
             continue
 
-        if _is_provider_in_cooldown(db, provider, RATE_LIMIT_COOLDOWN_MINUTES):
+        if in_cooldown:
             LOGGER.info(
                 "provider_skipped request_id=%s provider=%s reason=cooldown",
                 request_id,
                 provider,
             )
             _emit_event(event_callback, f"{provider_name}: skipped (cooldown)")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
                 result="error",
                 response_time_ms=0,
                 error_message="skipped: provider cooldown active",
+                request_id=request_id,
             )
             attempt_order += 1
             continue
@@ -339,11 +398,13 @@ def run_email_waterfall(
             )
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
 
-            db.increment_provider_usage(
+            _safe_increment_provider_usage(
+                db,
                 provider=provider,
                 month_key=month_key,
                 increment_by=1,
                 estimated_limit=estimated_limit,
+                request_id=request_id,
             )
 
             if provider_result and provider_result.email:
@@ -360,7 +421,8 @@ def run_email_waterfall(
                         elapsed_ms,
                     )
                     _emit_event(event_callback, f"{provider_name}: no result")
-                    db.insert_provider_attempt(
+                    _safe_record_provider_attempt(
+                        db,
                         lookup_id=lookup_id,
                         provider=provider,
                         attempt_order=attempt_order,
@@ -368,6 +430,7 @@ def run_email_waterfall(
                         http_status=200,
                         response_time_ms=elapsed_ms,
                         error_message=f"invalid_email: {validation_result.reason}",
+                        request_id=request_id,
                     )
                     continue
 
@@ -383,13 +446,15 @@ def run_email_waterfall(
                     provider_result.email,
                 )
                 _emit_event(event_callback, f"{provider_name}: found email")
-                db.insert_provider_attempt(
+                _safe_record_provider_attempt(
+                    db,
                     lookup_id=lookup_id,
                     provider=provider,
                     attempt_order=attempt_order,
                     result="found",
                     http_status=200,
                     response_time_ms=elapsed_ms,
+                    request_id=request_id,
                 )
                 break
 
@@ -400,7 +465,8 @@ def run_email_waterfall(
                 elapsed_ms,
             )
             _emit_event(event_callback, f"{provider_name}: no result")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
@@ -408,6 +474,7 @@ def run_email_waterfall(
                 http_status=200,
                 response_time_ms=elapsed_ms,
                 error_message="no email returned",
+                request_id=request_id,
             )
         except ProviderHTTPError as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -420,13 +487,16 @@ def run_email_waterfall(
                 exc,
             )
             _emit_event(event_callback, f"{provider_name}: error ({exc.status_code})")
-            db.increment_provider_usage(
+            _safe_increment_provider_usage(
+                db,
                 provider=provider,
                 month_key=month_key,
                 increment_by=1,
                 estimated_limit=estimated_limit,
+                request_id=request_id,
             )
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
@@ -434,6 +504,7 @@ def run_email_waterfall(
                 http_status=exc.status_code,
                 response_time_ms=elapsed_ms,
                 error_message=str(exc),
+                request_id=request_id,
             )
         except ProviderRequestError as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -446,13 +517,15 @@ def run_email_waterfall(
                 exc,
             )
             _emit_event(event_callback, f"{provider_name}: error")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
                 result="error",
                 response_time_ms=elapsed_ms,
                 error_message=f"request_error: {exc}",
+                request_id=request_id,
             )
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -464,13 +537,15 @@ def run_email_waterfall(
                 elapsed_ms,
             )
             _emit_event(event_callback, f"{provider_name}: error")
-            db.insert_provider_attempt(
+            _safe_record_provider_attempt(
+                db,
                 lookup_id=lookup_id,
                 provider=provider,
                 attempt_order=attempt_order,
                 result="error",
                 response_time_ms=elapsed_ms,
                 error_message=f"unexpected_error: {exc}",
+                request_id=request_id,
             )
         finally:
             attempt_order += 1
