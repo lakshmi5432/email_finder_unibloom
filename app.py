@@ -283,7 +283,18 @@ if run_lookup:
 
     def push_message(message: str) -> None:
         st.session_state["lookup_messages"].append(message)
-        progress_placeholder.markdown("\n".join(f"- {line}" for line in st.session_state["lookup_messages"]))
+        try:
+            progress_placeholder.markdown(
+                "\n".join(f"- {line}" for line in st.session_state["lookup_messages"])
+            )
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            LOGGER.warning(
+                "lookup_progress_render_error request_id=%s error_type=%s",
+                request_id,
+                type(exc).__name__,
+            )
 
     LOGGER.info(
         "lookup_request_start request_id=%s raw_url=%s force_refresh=%s",

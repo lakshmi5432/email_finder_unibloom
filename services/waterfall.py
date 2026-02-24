@@ -162,8 +162,16 @@ def _emit_event(event_callback: Callable[[str], None] | None, message: str) -> N
         return
     try:
         event_callback(message)
-    except Exception:
-        LOGGER.exception("waterfall_event_callback_error message=%s", message)
+    except BaseException as exc:
+        # Streamlit may raise rerun/control-flow exceptions from UI callback code.
+        # Do not let callback rendering stop the provider waterfall.
+        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+            raise
+        LOGGER.warning(
+            "waterfall_event_callback_error message=%s error_type=%s",
+            message,
+            type(exc).__name__,
+        )
 
 
 def _provider_display_name(provider: str) -> str:
