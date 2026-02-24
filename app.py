@@ -293,22 +293,10 @@ if run_lookup:
     st.session_state["lookup_messages"] = []
     request_id = uuid4().hex[:8]
     st.session_state["current_request_id"] = request_id
-    progress_placeholder = st.empty()
+    progress_messages: list[str] = []
 
     def push_message(message: str) -> None:
-        st.session_state["lookup_messages"].append(message)
-        try:
-            progress_placeholder.markdown(
-                "\n".join(f"- {line}" for line in st.session_state["lookup_messages"])
-            )
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
-            LOGGER.warning(
-                "lookup_progress_render_error request_id=%s error_type=%s",
-                request_id,
-                type(exc).__name__,
-            )
+        progress_messages.append(message)
 
     LOGGER.info(
         "lookup_request_start request_id=%s raw_url=%s force_refresh=%s",
@@ -357,7 +345,9 @@ if run_lookup:
                         event_callback=push_message,
                         request_id=request_id,
                     )
-            except Exception as exc:
+            except BaseException as exc:
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
                 st.session_state["last_result"] = None
                 st.session_state["last_error"] = "Lookup failed. Check Provider Status and app logs."
                 push_message("Lookup failed")
@@ -380,6 +370,8 @@ if run_lookup:
                     )
                 if st.session_state["sheet_result"].get("success"):
                     push_message("Saved to Google Sheets")
+
+    st.session_state["lookup_messages"] = progress_messages
 
     LOGGER.info(
         "lookup_request_end request_id=%s status=%s email=%s source=%s",
