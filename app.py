@@ -414,7 +414,13 @@ st.toggle(
 )
 
 current_result = st.session_state.get("last_result")
-if current_result and current_result.get("status") == "found":
+current_email = ""
+current_status = ""
+if isinstance(current_result, dict):
+    current_email = str(current_result.get("email") or "").strip()
+    current_status = str(current_result.get("status") or "").strip().lower()
+
+if current_result and current_email:
     if st.button("Save Current Result to Google Sheets"):
         with st.spinner("Saving to Google Sheets..."):
             st.session_state["sheet_result"] = _save_to_google_sheet(
@@ -423,6 +429,8 @@ if current_result and current_result.get("status") == "found":
             )
         if st.session_state["sheet_result"].get("success"):
             st.session_state["lookup_messages"].append("Saved to Google Sheets")
+    if current_status and current_status != "found":
+        st.caption(f"Result status is `{current_status}`, but email is present so save is enabled.")
 else:
     st.caption("Run a successful lookup to enable save.")
 
