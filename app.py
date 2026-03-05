@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
-import os
 from typing import Any
 from uuid import uuid4
 
@@ -15,9 +14,6 @@ from services.google_sheets import append_contact_to_google_sheet
 from services.linkedin_utils import LinkedInURLValidationError, normalize_linkedin_profile_url
 from services.waterfall import (
     CACHE_TTL_HOURS,
-    PROVIDER_DEFAULT_LIMITS,
-    PROVIDER_ORDER,
-    RATE_LIMIT_COOLDOWN_MINUTES,
     run_email_waterfall,
 )
 from utils.logging_utils import configure_logging
@@ -83,72 +79,56 @@ def _is_recent_lookup_row(lookup_row: dict[str, Any], ttl_hours: int) -> bool:
     return datetime.utcnow() - updated_at <= timedelta(hours=ttl_hours)
 
 
-def _ensure_provider_usage_rows(month_key: str) -> None:
-    for provider in PROVIDER_ORDER:
-        usage = db.get_provider_usage(provider, month_key)
-        if usage is None:
-            db.upsert_provider_usage(
-                provider=provider,
-                month_key=month_key,
-                used_count=0,
-                estimated_limit=PROVIDER_DEFAULT_LIMITS.get(provider),
-                is_enabled=True,
-            )
-
-
-def _provider_cooldown_label(provider: str) -> str:
-    latest_429 = db.get_latest_provider_rate_limit_attempt(provider)
-    if not latest_429:
-        return "no"
-
-    created_at = _parse_sqlite_timestamp(latest_429.get("created_at"))
-    if not created_at:
-        return "no"
-
-    elapsed = datetime.utcnow() - created_at
-    cooldown = timedelta(minutes=RATE_LIMIT_COOLDOWN_MINUTES)
-    if elapsed >= cooldown:
-        return "no"
-
-    remaining_minutes = max(1, int((cooldown - elapsed).total_seconds() // 60))
-    return f"yes ({remaining_minutes}m left)"
-
-
-def _provider_status_rows(month_key: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    key_by_provider = {
-        "hunter": "HUNTER_API_KEY",
-        "dropcontact": "DROPCONTACT_API_KEY",
-        "apollo": "APOLLO_API_KEY",
-    }
-    for provider in PROVIDER_ORDER:
-        usage = db.get_provider_usage(provider, month_key) or {}
-        used_count = int(usage.get("used_count", 0))
-        estimated_limit = usage.get("estimated_limit")
-        is_enabled = bool(usage.get("is_enabled", 1))
-
-        if estimated_limit is None:
-            credits_left: int | str = "unlimited"
-            limit_display: int | str = "unlimited"
-        else:
-            limit_value = int(estimated_limit)
-            credits_left = max(limit_value - used_count, 0)
-            limit_display = limit_value
-
-        rows.append(
-            {
-                "provider": provider,
-                "enabled": "enabled" if is_enabled else "disabled",
-                "used_count": used_count,
-                "estimated_limit": limit_display,
-                "credits_left": credits_left,
-                "cooldown_active": _provider_cooldown_label(provider),
-                "api_key": "set"
-                if str(os.getenv(key_by_provider.get(provider, ""), "")).strip()
-                else "missing",
+def _inject_ui_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            .stApp {
+                background: linear-gradient(180deg, #f4f8fb 0%, #ffffff 36%);
             }
-        )
-    return rows
+            .block-container {
+                max-width: 1080px;
+                padding-top: 1.8rem;
+                padding-bottom: 2.5rem;
+            }
+            h1, h2, h3 {
+                color: #102a43;
+            }
+            .stForm {
+                border: 1px solid #d9e2ec;
+                border-radius: 14px;
+                padding: 1rem 1rem 0.5rem 1rem;
+                background: #ffffff;
+            }
+            .stButton > button {
+                border-radius: 10px;
+                border: 1px solid #0f766e;
+                background: #0f766e;
+                color: #ffffff;
+                font-weight: 600;
+            }
+            .stButton > button:hover {
+                border-color: #0b5f59;
+                background: #0b5f59;
+                color: #ffffff;
+            }
+            .stButton > button[kind="secondary"] {
+                border-color: #1d4ed8;
+                background: #1d4ed8;
+                color: #ffffff;
+            }
+            .stButton > button[kind="secondary"]:hover {
+                border-color: #1e40af;
+                background: #1e40af;
+                color: #ffffff;
+            }
+            .stToggle [data-baseweb="switch"] > div {
+                background-color: #0f766e;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _history_rows(limit: int = 20) -> list[dict[str, Any]]:
@@ -266,23 +246,26 @@ def _save_to_google_sheet(result: dict[str, Any], *, request_id: str | None = No
 
 
 _init_session_state()
-month_key = db.current_month_key()
-_ensure_provider_usage_rows(month_key)
+_inject_ui_styles()
 
-st.title("LinkedIn URL -> Waterfall -> Google Sheets")
+st.title("LinkedIn URL to Email Finder")
 st.write(
-    "Use single lookup or bulk upload: normalize LinkedIn profile URLs, run waterfall providers, and save found emails to Google Sheets."
+    "Paste one LinkedIn profile URL or upload a file. The app normalizes URLs, runs the waterfall providers, and saves found contacts to Google Sheets."
+)
+st.caption(
+    "Quick flow: 1) Find Email  2) Review Result  3) Save to Google Sheets"
 )
 
-st.subheader("LinkedIn URL Input")
+st.subheader("1) Single LinkedIn Lookup")
 with st.form("lookup_form", clear_on_submit=False):
     raw_linkedin_url = st.text_input(
         "LinkedIn profile URL",
         key="linkedin_input",
         placeholder="https://www.linkedin.com/in/username/",
     )
+    st.caption("Only profile URLs are accepted (linkedin.com/in/...).")
     force_refresh = st.checkbox(
-        "Force refresh (ignore cache and re-run providers)",
+        "Force refresh (ignore cache and run providers again)",
         value=False,
     )
     run_lookup = st.form_submit_button("Find Email", type="primary")
@@ -349,7 +332,7 @@ if run_lookup:
                 if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                     raise
                 st.session_state["last_result"] = None
-                st.session_state["last_error"] = "Lookup failed. Check Provider Status and app logs."
+                st.session_state["last_error"] = "Lookup failed. Check API keys or app logs."
                 push_message("Lookup failed")
                 LOGGER.exception(
                     "lookup_request_failed request_id=%s linkedin_url=%s error=%s",
@@ -381,13 +364,29 @@ if run_lookup:
         (st.session_state.get("last_result") or {}).get("source"),
     )
 
-st.subheader("Result Panel")
+st.subheader("2) Result")
+result_for_panel = st.session_state.get("last_result")
+if not result_for_panel:
+    last_lookup_url = st.session_state.get("last_lookup_url")
+    if isinstance(last_lookup_url, str) and last_lookup_url.strip():
+        recovered_row = db.get_lookup_by_linkedin_url(last_lookup_url.strip())
+        if recovered_row and str(recovered_row.get("status") or "") in {"found", "not_found", "error"}:
+            result_for_panel = _cached_lookup_result(recovered_row)
+            st.session_state["last_result"] = result_for_panel
+            LOGGER.info(
+                "result_panel_recovered_from_db request_id=%s linkedin_url=%s status=%s email=%s",
+                st.session_state.get("current_request_id"),
+                last_lookup_url,
+                result_for_panel.get("status"),
+                result_for_panel.get("email"),
+            )
+
 if st.session_state.get("last_error"):
     st.error(st.session_state["last_error"])
-elif not st.session_state.get("last_result"):
+elif not result_for_panel:
     st.info("No lookup yet. Enter a LinkedIn URL and click Find Email.")
 else:
-    result = st.session_state["last_result"]
+    result = result_for_panel
     if result.get("status") == "found":
         st.success(f"Email found: {result.get('email')}")
     else:
@@ -403,11 +402,12 @@ else:
         st.json(result)
 
 if st.session_state.get("lookup_messages"):
-    st.caption("Lookup progress")
+    st.caption("Lookup Progress")
     for message in st.session_state["lookup_messages"]:
         st.write(f"- {message}")
 
-st.subheader("Save to Google Sheets")
+st.subheader("3) Save to Google Sheets")
+st.caption("Use auto-save for every successful lookup, or click the manual save button.")
 st.toggle(
     "Auto-save successful lookups to Google Sheets",
     key="auto_save_sheet",
@@ -451,14 +451,14 @@ if sheet_result:
             f"Sheet: {sheet_result.get('sheet_id')} | Worksheet: {sheet_result.get('worksheet')}"
         )
 
-st.subheader("Bulk Upload (One LinkedIn URL Per Row)")
+st.subheader("4) Bulk Upload (One LinkedIn URL Per Row)")
 uploaded_file = st.file_uploader(
     "Upload .txt or .csv file",
     type=["txt", "csv"],
-    help="File format: one LinkedIn profile URL per row.",
+    help="Use one LinkedIn profile URL in each row.",
 )
 st.checkbox(
-    "Force refresh for bulk (ignore cache and re-run providers)",
+    "Force refresh for bulk (ignore cache and run providers again)",
     key="batch_force_refresh",
 )
 
@@ -467,7 +467,7 @@ if uploaded_file is not None:
     parsed_bulk_urls = _parse_bulk_linkedin_urls(uploaded_file)
     st.caption(f"Parsed rows: {len(parsed_bulk_urls)} from `{uploaded_file.name}`")
 
-if st.button("Run Bulk Lookup + Save to Google Sheets", type="primary"):
+if st.button("Run Bulk Lookup and Save", type="primary"):
     st.session_state["batch_results"] = []
     st.session_state["batch_summary"] = None
     st.session_state["batch_last_file_name"] = uploaded_file.name if uploaded_file else None
@@ -662,15 +662,9 @@ batch_results = st.session_state.get("batch_results") or []
 if batch_results:
     st.dataframe(batch_results, width="stretch", hide_index=True)
 
-st.subheader("History / Recent Lookups")
+st.subheader("5) History / Recent Lookups")
 history_rows = _history_rows(limit=20)
 if history_rows:
     st.dataframe(history_rows, width="stretch", hide_index=True)
 else:
     st.info("No lookup history yet.")
-
-st.subheader("Provider Status")
-status_rows = _provider_status_rows(month_key)
-st.dataframe(status_rows, width="stretch", hide_index=True)
-st.caption(f"Current usage month: {month_key}")
-st.caption(f"Provider cooldown window: {RATE_LIMIT_COOLDOWN_MINUTES} minutes")

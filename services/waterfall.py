@@ -12,8 +12,10 @@ from services.providers import (
     ProviderHTTPError,
     ProviderRequestError,
     fetch_from_apollo,
+    fetch_from_apollo_new,
     fetch_from_dropcontact,
     fetch_from_hunter,
+    fetch_from_hunter_new,
 )
 from services.validation import validate_email_mvp
 
@@ -30,19 +32,37 @@ REJECT_ROLE_EMAILS = os.getenv("REJECT_ROLE_EMAILS", "true").strip().lower() in 
     "on",
 }
 
-PROVIDER_ORDER: tuple[str, ...] = ("hunter", "dropcontact", "apollo")
+PROVIDER_KEY_ENV: dict[str, str | None] = {
+    "hunter": "HUNTER_API_KEY",
+    "hunter_new": "HUNTER_API_KEY_2",
+    "dropcontact": "DROPCONTACT_API_KEY",
+    "apollo": "APOLLO_API_KEY",
+    "apollo_new": "APOLLO_API_KEY_2",
+}
+
+PROVIDER_ORDER: tuple[str, ...] = (
+    "hunter",
+    "hunter_new",
+    "dropcontact",
+    "apollo",
+    "apollo_new",
+)
 PROVIDER_DEFAULT_LIMITS: dict[str, int | None] = {
     "hunter": int(os.getenv("HUNTER_MONTHLY_LIMIT", "25")),
+    "hunter_new": int(os.getenv("HUNTER_NEW_MONTHLY_LIMIT", "25")),
     "dropcontact": int(os.getenv("DROPCONTACT_MONTHLY_LIMIT", "100")),
     "apollo": int(os.getenv("APOLLO_MONTHLY_LIMIT", "100")),
+    "apollo_new": int(os.getenv("APOLLO_NEW_MONTHLY_LIMIT", "100")),
 }
 
 
 ProviderCallable = Callable[..., NormalizedProviderResponse | None]
 PROVIDER_CONNECTORS: dict[str, ProviderCallable] = {
     "hunter": fetch_from_hunter,
+    "hunter_new": fetch_from_hunter_new,
     "dropcontact": fetch_from_dropcontact,
     "apollo": fetch_from_apollo,
+    "apollo_new": fetch_from_apollo_new,
 }
 
 
@@ -175,7 +195,14 @@ def _emit_event(event_callback: Callable[[str], None] | None, message: str) -> N
 
 
 def _provider_display_name(provider: str) -> str:
-    return provider[:1].upper() + provider[1:]
+    labels = {
+        "hunter": "Hunter",
+        "hunter_new": "Hunter (new key)",
+        "dropcontact": "Dropcontact",
+        "apollo": "Apollo",
+        "apollo_new": "Apollo (new key)",
+    }
+    return labels.get(provider, provider[:1].upper() + provider[1:])
 
 
 def _safe_int(value: Any, default: int | None = None) -> int | None:
@@ -217,6 +244,13 @@ def _safe_record_provider_attempt(
             attempt_order,
             result,
         )
+
+
+def _provider_has_api_key(provider: str) -> bool:
+    env_name = PROVIDER_KEY_ENV.get(provider)
+    if not env_name:
+        return True
+    return bool(str(os.getenv(env_name, "")).strip())
 
 
 def _safe_increment_provider_usage(
@@ -333,6 +367,26 @@ def run_email_waterfall(
                 result="error",
                 response_time_ms=0,
                 error_message=f"precheck_error: {exc}",
+                request_id=request_id,
+            )
+            attempt_order += 1
+            continue
+
+        if not _provider_has_api_key(provider):
+            LOGGER.info(
+                "provider_skipped request_id=%s provider=%s reason=missing_api_key",
+                request_id,
+                provider,
+            )
+            _emit_event(event_callback, f"{provider_name}: skipped (missing API key)")
+            _safe_record_provider_attempt(
+                db,
+                lookup_id=lookup_id,
+                provider=provider,
+                attempt_order=attempt_order,
+                result="error",
+                response_time_ms=0,
+                error_message="skipped: missing API key",
                 request_id=request_id,
             )
             attempt_order += 1

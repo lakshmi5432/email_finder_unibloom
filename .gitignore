@@ -9,3 +9,4 @@ gen-lang-client-*.json
 .venv/
 __pycache__/
 db/email_finder.db
+.DS_Store

@@ -20,6 +20,11 @@ APOLLO_PEOPLE_MATCH_ENDPOINT = "https://api.apollo.io/api/v1/people/match"
 
 DEFAULT_TIMEOUT_SECONDS = 10
 
+HUNTER_PRIMARY_KEY_ENV = "HUNTER_API_KEY"
+HUNTER_NEW_KEY_ENV = "HUNTER_API_KEY_2"
+APOLLO_PRIMARY_KEY_ENV = "APOLLO_API_KEY"
+APOLLO_NEW_KEY_ENV = "APOLLO_API_KEY_2"
+
 _EMAIL_PATHS = (
     "email",
     "work_email",
@@ -239,6 +244,19 @@ def _extract_linkedin_handle(linkedin_url: str) -> str | None:
     return None
 
 
+def _resolve_api_key(
+    *,
+    explicit_key: str | None,
+    env_name: str,
+    connector_label: str,
+) -> str | None:
+    token = _as_clean_text(explicit_key) or _as_clean_text(os.getenv(env_name))
+    if token:
+        return token
+    LOGGER.info("%s is not set; skipping %s connector.", env_name, connector_label)
+    return None
+
+
 def _dropcontact_email_candidate(
     email_items: list[Any],
 ) -> tuple[str | None, EmailStatus, int | None]:
@@ -314,14 +332,70 @@ def fetch_from_hunter(
     """
     Hunter Email Finder connector using LinkedIn handle.
     """
-    token = _as_clean_text(api_key) or _as_clean_text(os.getenv("HUNTER_API_KEY"))
+    token = _resolve_api_key(
+        explicit_key=api_key,
+        env_name=HUNTER_PRIMARY_KEY_ENV,
+        connector_label="Hunter",
+    )
     if not token:
-        LOGGER.info("HUNTER_API_KEY is not set; skipping Hunter connector.")
         return None
+
+    return _fetch_from_hunter_with_key(
+        linkedin_url,
+        provider_name="hunter",
+        token=token,
+        linkedin_handle=linkedin_handle,
+        timeout_seconds=timeout_seconds,
+        raise_on_http_error=raise_on_http_error,
+    )
+
+
+def fetch_from_hunter_new(
+    linkedin_url: str,
+    *,
+    linkedin_handle: str | None = None,
+    api_key: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    raise_on_http_error: bool = False,
+) -> NormalizedProviderResponse | None:
+    """
+    Hunter Email Finder connector using secondary/new Hunter key.
+    """
+    token = _resolve_api_key(
+        explicit_key=api_key,
+        env_name=HUNTER_NEW_KEY_ENV,
+        connector_label="Hunter (new key)",
+    )
+    if not token:
+        return None
+
+    return _fetch_from_hunter_with_key(
+        linkedin_url,
+        provider_name="hunter_new",
+        token=token,
+        linkedin_handle=linkedin_handle,
+        timeout_seconds=timeout_seconds,
+        raise_on_http_error=raise_on_http_error,
+    )
+
+
+def _fetch_from_hunter_with_key(
+    linkedin_url: str,
+    *,
+    provider_name: str,
+    token: str,
+    linkedin_handle: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    raise_on_http_error: bool = False,
+) -> NormalizedProviderResponse | None:
+    """Shared Hunter request implementation used by primary and new-key connectors."""
 
     handle = _as_clean_text(linkedin_handle) or _extract_linkedin_handle(linkedin_url)
     if not handle:
-        LOGGER.info("Hunter connector skipped because LinkedIn handle could not be parsed.")
+        LOGGER.info(
+            "%s connector skipped because LinkedIn handle could not be parsed.",
+            provider_name,
+        )
         return None
 
     params = {
@@ -337,27 +411,27 @@ def fetch_from_hunter(
         )
     except requests.RequestException as exc:
         if raise_on_http_error:
-            raise ProviderRequestError("hunter", str(exc)) from exc
-        LOGGER.warning("Hunter request error: %s", exc)
+            raise ProviderRequestError(provider_name, str(exc)) from exc
+        LOGGER.warning("%s request error: %s", provider_name, exc)
         return None
 
     if response.status_code >= 400:
         if raise_on_http_error:
             raise ProviderHTTPError(
-                "hunter",
+                provider_name,
                 response.status_code,
-                f"hunter returned HTTP {response.status_code}",
+                f"{provider_name} returned HTTP {response.status_code}",
             )
-        _is_handled_http_error("hunter", response)
+        _is_handled_http_error(provider_name, response)
         return None
 
     payload = _safe_json(response)
     if payload is None:
-        LOGGER.warning("Hunter returned a non-JSON response.")
+        LOGGER.warning("%s returned a non-JSON response.", provider_name)
         return None
 
     normalized = normalize_provider_response(
-        provider="hunter",
+        provider=provider_name,
         linkedin_url=linkedin_url,
         raw_response=payload,
     )
@@ -503,10 +577,59 @@ def fetch_from_apollo(
     """
     Apollo People Match connector using linkedin_url enrichment input.
     """
-    token = _as_clean_text(api_key) or _as_clean_text(os.getenv("APOLLO_API_KEY"))
+    token = _resolve_api_key(
+        explicit_key=api_key,
+        env_name=APOLLO_PRIMARY_KEY_ENV,
+        connector_label="Apollo",
+    )
     if not token:
-        LOGGER.info("APOLLO_API_KEY is not set; skipping Apollo connector.")
         return None
+
+    return _fetch_from_apollo_with_key(
+        linkedin_url,
+        provider_name="apollo",
+        token=token,
+        timeout_seconds=timeout_seconds,
+        raise_on_http_error=raise_on_http_error,
+    )
+
+
+def fetch_from_apollo_new(
+    linkedin_url: str,
+    *,
+    api_key: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    raise_on_http_error: bool = False,
+) -> NormalizedProviderResponse | None:
+    """
+    Apollo People Match connector using secondary/new Apollo key.
+    """
+    token = _resolve_api_key(
+        explicit_key=api_key,
+        env_name=APOLLO_NEW_KEY_ENV,
+        connector_label="Apollo (new key)",
+    )
+    if not token:
+        return None
+
+    return _fetch_from_apollo_with_key(
+        linkedin_url,
+        provider_name="apollo_new",
+        token=token,
+        timeout_seconds=timeout_seconds,
+        raise_on_http_error=raise_on_http_error,
+    )
+
+
+def _fetch_from_apollo_with_key(
+    linkedin_url: str,
+    *,
+    provider_name: str,
+    token: str,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+    raise_on_http_error: bool = False,
+) -> NormalizedProviderResponse | None:
+    """Shared Apollo request implementation used by primary and new-key connectors."""
 
     headers = {
         "X-Api-Key": token,
@@ -527,23 +650,23 @@ def fetch_from_apollo(
         )
     except requests.RequestException as exc:
         if raise_on_http_error:
-            raise ProviderRequestError("apollo", str(exc)) from exc
-        LOGGER.warning("Apollo request error: %s", exc)
+            raise ProviderRequestError(provider_name, str(exc)) from exc
+        LOGGER.warning("%s request error: %s", provider_name, exc)
         return None
 
     if response.status_code >= 400:
         if raise_on_http_error:
             raise ProviderHTTPError(
-                "apollo",
+                provider_name,
                 response.status_code,
-                f"apollo returned HTTP {response.status_code}",
+                f"{provider_name} returned HTTP {response.status_code}",
             )
-        _is_handled_http_error("apollo", response)
+        _is_handled_http_error(provider_name, response)
         return None
 
     response_payload = _safe_json(response)
     if response_payload is None:
-        LOGGER.warning("Apollo returned non-JSON response.")
+        LOGGER.warning("%s returned non-JSON response.", provider_name)
         return None
 
     candidate: dict[str, Any] = response_payload
@@ -556,7 +679,7 @@ def fetch_from_apollo(
             candidate = matches[0]
 
     normalized = normalize_provider_response(
-        provider="apollo",
+        provider=provider_name,
         linkedin_url=linkedin_url,
         raw_response=candidate,
     )
