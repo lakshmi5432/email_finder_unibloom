@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from db.database import Database
@@ -81,7 +81,8 @@ def _is_recent_lookup(lookup_row: dict[str, Any], ttl_hours: int) -> bool:
         updated_at = _parse_sqlite_timestamp(lookup_row.get("created_at"))
     if updated_at is None:
         return False
-    return datetime.utcnow() - updated_at <= timedelta(hours=ttl_hours)
+    updated_at_utc = updated_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - updated_at_utc <= timedelta(hours=ttl_hours)
 
 
 def _confidence_to_percent(value: Any) -> int | None:
@@ -149,7 +150,8 @@ def _is_provider_in_cooldown(
     if created_at is None:
         return False
 
-    return datetime.utcnow() - created_at < timedelta(minutes=cooldown_minutes)
+    created_at_utc = created_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - created_at_utc < timedelta(minutes=cooldown_minutes)
 
 
 def _ensure_provider_usage_row(db: Database, provider: str, month_key: str) -> dict[str, Any]:
@@ -307,7 +309,7 @@ def run_email_waterfall(
     if (
         not force_refresh
         and existing_lookup
-        and existing_lookup.get("status") in {"found", "not_found", "error"}
+        and existing_lookup.get("status") in {"found", "not_found"}
         and _is_recent_lookup(existing_lookup, CACHE_TTL_HOURS)
     ):
         cached_result = _lookup_row_to_result(existing_lookup, cache_hit=True)
