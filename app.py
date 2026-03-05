@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from typing import Any
 from uuid import uuid4
@@ -76,7 +76,8 @@ def _is_recent_lookup_row(lookup_row: dict[str, Any], ttl_hours: int) -> bool:
         updated_at = _parse_sqlite_timestamp(lookup_row.get("created_at"))
     if updated_at is None:
         return False
-    return datetime.utcnow() - updated_at <= timedelta(hours=ttl_hours)
+    updated_at_utc = updated_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - updated_at_utc <= timedelta(hours=ttl_hours)
 
 
 def _inject_ui_styles() -> None:
@@ -302,7 +303,7 @@ if run_lookup:
         if (
             cached_lookup
             and not force_refresh
-            and str(cached_lookup.get("status") or "") in {"found", "not_found", "error"}
+            and str(cached_lookup.get("status") or "") in {"found", "not_found"}
             and _is_recent_lookup_row(cached_lookup, CACHE_TTL_HOURS)
         ):
             st.session_state["last_result"] = _cached_lookup_result(cached_lookup)
