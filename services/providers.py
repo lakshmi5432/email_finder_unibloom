@@ -20,10 +20,10 @@ APOLLO_PEOPLE_MATCH_ENDPOINT = "https://api.apollo.io/api/v1/people/match"
 
 DEFAULT_TIMEOUT_SECONDS = 10
 
-HUNTER_PRIMARY_KEY_ENV = "HUNTER_API_KEY"
-HUNTER_NEW_KEY_ENV = "HUNTER_API_KEY_2"
-APOLLO_PRIMARY_KEY_ENV = "APOLLO_API_KEY"
-APOLLO_NEW_KEY_ENV = "APOLLO_API_KEY_2"
+HUNTER_PRIMARY_KEY_ENVS = ("HUNTER_API_KEY",)
+HUNTER_NEW_KEY_ENVS = ("HUNTER_API_KEY_2", "HUNTER_API_KEY_NEW")
+APOLLO_PRIMARY_KEY_ENVS = ("APOLLO_API_KEY",)
+APOLLO_NEW_KEY_ENVS = ("APOLLO_API_KEY_2", "APOLLO_API_KEY_NEW")
 
 _EMAIL_PATHS = (
     "email",
@@ -247,13 +247,20 @@ def _extract_linkedin_handle(linkedin_url: str) -> str | None:
 def _resolve_api_key(
     *,
     explicit_key: str | None,
-    env_name: str,
+    env_names: tuple[str, ...],
     connector_label: str,
 ) -> str | None:
-    token = _as_clean_text(explicit_key) or _as_clean_text(os.getenv(env_name))
+    token = _as_clean_text(explicit_key)
     if token:
         return token
-    LOGGER.info("%s is not set; skipping %s connector.", env_name, connector_label)
+
+    for env_name in env_names:
+        env_token = _as_clean_text(os.getenv(env_name))
+        if env_token:
+            return env_token
+
+    env_list = ", ".join(env_names)
+    LOGGER.info("%s not set; skipping %s connector.", env_list, connector_label)
     return None
 
 
@@ -334,7 +341,7 @@ def fetch_from_hunter(
     """
     token = _resolve_api_key(
         explicit_key=api_key,
-        env_name=HUNTER_PRIMARY_KEY_ENV,
+        env_names=HUNTER_PRIMARY_KEY_ENVS,
         connector_label="Hunter",
     )
     if not token:
@@ -363,7 +370,7 @@ def fetch_from_hunter_new(
     """
     token = _resolve_api_key(
         explicit_key=api_key,
-        env_name=HUNTER_NEW_KEY_ENV,
+        env_names=HUNTER_NEW_KEY_ENVS,
         connector_label="Hunter (new key)",
     )
     if not token:
@@ -579,7 +586,7 @@ def fetch_from_apollo(
     """
     token = _resolve_api_key(
         explicit_key=api_key,
-        env_name=APOLLO_PRIMARY_KEY_ENV,
+        env_names=APOLLO_PRIMARY_KEY_ENVS,
         connector_label="Apollo",
     )
     if not token:
@@ -606,7 +613,7 @@ def fetch_from_apollo_new(
     """
     token = _resolve_api_key(
         explicit_key=api_key,
-        env_name=APOLLO_NEW_KEY_ENV,
+        env_names=APOLLO_NEW_KEY_ENVS,
         connector_label="Apollo (new key)",
     )
     if not token:

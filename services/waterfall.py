@@ -341,6 +341,9 @@ def run_email_waterfall(
         else 1
     )
     found_result: NormalizedProviderResponse | None = None
+    providers_with_api_call = 0
+    providers_with_not_found = 0
+    providers_with_error_or_skipped = 0
 
     for provider in PROVIDER_ORDER:
         provider_name = _provider_display_name(provider)
@@ -369,6 +372,7 @@ def run_email_waterfall(
                 error_message=f"precheck_error: {exc}",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
             attempt_order += 1
             continue
 
@@ -389,6 +393,7 @@ def run_email_waterfall(
                 error_message="skipped: missing API key",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
             attempt_order += 1
             continue
 
@@ -409,6 +414,7 @@ def run_email_waterfall(
                 error_message="skipped: provider disabled",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
             attempt_order += 1
             continue
 
@@ -431,6 +437,7 @@ def run_email_waterfall(
                 error_message="skipped: monthly limit reached",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
             attempt_order += 1
             continue
 
@@ -451,6 +458,7 @@ def run_email_waterfall(
                 error_message="skipped: provider cooldown active",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
             attempt_order += 1
             continue
 
@@ -463,6 +471,7 @@ def run_email_waterfall(
             attempt_order,
         )
         start_time = time.perf_counter()
+        providers_with_api_call += 1
         try:
             provider_result = connector(
                 linkedin_url,
@@ -504,6 +513,7 @@ def run_email_waterfall(
                         error_message=f"invalid_email: {validation_result.reason}",
                         request_id=request_id,
                     )
+                    providers_with_not_found += 1
                     continue
 
                 provider_result = provider_result.model_copy(
@@ -548,6 +558,7 @@ def run_email_waterfall(
                 error_message="no email returned",
                 request_id=request_id,
             )
+            providers_with_not_found += 1
         except ProviderHTTPError as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             LOGGER.warning(
@@ -559,14 +570,6 @@ def run_email_waterfall(
                 exc,
             )
             _emit_event(event_callback, f"{provider_name}: error ({exc.status_code})")
-            _safe_increment_provider_usage(
-                db,
-                provider=provider,
-                month_key=month_key,
-                increment_by=1,
-                estimated_limit=estimated_limit,
-                request_id=request_id,
-            )
             _safe_record_provider_attempt(
                 db,
                 lookup_id=lookup_id,
@@ -578,6 +581,7 @@ def run_email_waterfall(
                 error_message=str(exc),
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
         except ProviderRequestError as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             LOGGER.warning(
@@ -599,6 +603,7 @@ def run_email_waterfall(
                 error_message=f"request_error: {exc}",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
         except Exception as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             LOGGER.exception(
@@ -619,6 +624,7 @@ def run_email_waterfall(
                 error_message=f"unexpected_error: {exc}",
                 request_id=request_id,
             )
+            providers_with_error_or_skipped += 1
         finally:
             attempt_order += 1
 
@@ -650,9 +656,19 @@ def run_email_waterfall(
         )
         return output
 
+    final_status = "not_found"
+    if providers_with_api_call == 0 and providers_with_error_or_skipped > 0:
+        final_status = "error"
+    elif (
+        providers_with_api_call > 0
+        and providers_with_not_found == 0
+        and providers_with_error_or_skipped > 0
+    ):
+        final_status = "error"
+
     db.upsert_lookup(
         linkedin_url=linkedin_url,
-        status="not_found",
+        status=final_status,
         email=None,
         full_name=None,
         company=None,
@@ -662,12 +678,16 @@ def run_email_waterfall(
         hubspot_status=preserved_hubspot_status,
     )
     result = _empty_result(linkedin_url=linkedin_url, cache_hit=False)
+    result["status"] = final_status
     result["source"] = "providers"
     elapsed_total_ms = int((time.perf_counter() - started_at) * 1000)
+    if final_status == "error":
+        _emit_event(event_callback, "All providers failed. Check API keys or provider access.")
     LOGGER.info(
-        "waterfall_end request_id=%s linkedin_url=%s status=not_found provider=%s elapsed_ms=%s",
+        "waterfall_end request_id=%s linkedin_url=%s status=%s provider=%s elapsed_ms=%s",
         request_id,
         linkedin_url,
+        final_status,
         None,
         elapsed_total_ms,
     )

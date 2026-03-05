@@ -389,6 +389,8 @@ else:
     result = result_for_panel
     if result.get("status") == "found":
         st.success(f"Email found: {result.get('email')}")
+    elif result.get("status") == "error":
+        st.error("Lookup failed across providers. Check API keys/credits and try Force refresh.")
     else:
         st.warning("No email found from providers.")
 
