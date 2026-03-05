@@ -563,6 +563,32 @@ def run_email_waterfall(
             providers_with_not_found += 1
         except ProviderHTTPError as exc:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            # Hunter returns 404 when a LinkedIn handle is not in its dataset.
+            # Treat this as "not found" rather than a hard provider error.
+            if provider in {"hunter", "hunter_new"} and exc.status_code == 404:
+                LOGGER.info(
+                    "provider_response request_id=%s provider=%s http_status=%s result=not_found elapsed_ms=%s error=%s",
+                    request_id,
+                    provider,
+                    exc.status_code,
+                    elapsed_ms,
+                    exc,
+                )
+                _emit_event(event_callback, f"{provider_name}: no result")
+                _safe_record_provider_attempt(
+                    db,
+                    lookup_id=lookup_id,
+                    provider=provider,
+                    attempt_order=attempt_order,
+                    result="not_found",
+                    http_status=exc.status_code,
+                    response_time_ms=elapsed_ms,
+                    error_message=str(exc),
+                    request_id=request_id,
+                )
+                providers_with_not_found += 1
+                continue
+
             LOGGER.warning(
                 "provider_response request_id=%s provider=%s http_status=%s result=error elapsed_ms=%s error=%s",
                 request_id,
