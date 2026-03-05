@@ -219,6 +219,34 @@ def _safe_json(response: requests.Response) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _truncate_text(value: str | None, limit: int = 180) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
+def _extract_http_error_detail(response: requests.Response) -> str:
+    payload = _safe_json(response)
+    if payload:
+        for key in ("message", "error", "detail", "reason", "description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return _truncate_text(value)
+        return _truncate_text(str(payload))
+    return _truncate_text(response.text)
+
+
+def _provider_http_error(provider_name: str, response: requests.Response) -> ProviderHTTPError:
+    detail = _extract_http_error_detail(response)
+    base_message = f"{provider_name} returned HTTP {response.status_code}"
+    if detail:
+        return ProviderHTTPError(provider_name, response.status_code, f"{base_message}: {detail}")
+    return ProviderHTTPError(provider_name, response.status_code, base_message)
+
+
 def _is_handled_http_error(provider: str, response: requests.Response) -> bool:
     status = response.status_code
     if status == 401:
@@ -424,11 +452,7 @@ def _fetch_from_hunter_with_key(
 
     if response.status_code >= 400:
         if raise_on_http_error:
-            raise ProviderHTTPError(
-                provider_name,
-                response.status_code,
-                f"{provider_name} returned HTTP {response.status_code}",
-            )
+            raise _provider_http_error(provider_name, response)
         _is_handled_http_error(provider_name, response)
         return None
 
@@ -485,11 +509,7 @@ def fetch_from_dropcontact(
 
     if create_response.status_code >= 400:
         if raise_on_http_error:
-            raise ProviderHTTPError(
-                "dropcontact",
-                create_response.status_code,
-                f"dropcontact returned HTTP {create_response.status_code}",
-            )
+            raise _provider_http_error("dropcontact", create_response)
         _is_handled_http_error("dropcontact", create_response)
         return None
 
@@ -519,11 +539,7 @@ def fetch_from_dropcontact(
 
         if poll_response.status_code >= 400:
             if raise_on_http_error:
-                raise ProviderHTTPError(
-                    "dropcontact",
-                    poll_response.status_code,
-                    f"dropcontact returned HTTP {poll_response.status_code}",
-                )
+                raise _provider_http_error("dropcontact", poll_response)
             _is_handled_http_error("dropcontact", poll_response)
             return None
 
@@ -663,11 +679,7 @@ def _fetch_from_apollo_with_key(
 
     if response.status_code >= 400:
         if raise_on_http_error:
-            raise ProviderHTTPError(
-                provider_name,
-                response.status_code,
-                f"{provider_name} returned HTTP {response.status_code}",
-            )
+            raise _provider_http_error(provider_name, response)
         _is_handled_http_error(provider_name, response)
         return None
 
